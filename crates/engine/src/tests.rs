@@ -5663,7 +5663,9 @@ fn static_xfa_forms_take_their_values_from_the_datasets_and_write_them_back() {
 /// #5155: filling a static XFA form one field at a time rewrites the datasets packet it wrote
 /// for the first field in place, so the session holds one new packet and a save writes one,
 /// not one per edit (the earlier ones orphaned in the file). Both packet layouts: an `/XFA`
-/// array, as Designer saves forms, and a single XDP stream.
+/// array, as Designer saves forms, and a single XDP stream. The save leaves unreferenced
+/// additions out (`drop_unlinked`) as well, so the saved count fails only with both safeguards
+/// gone; the in-place check is what pins `put_stream`'s reuse.
 #[test]
 fn filling_a_static_xfa_form_field_by_field_keeps_one_new_datasets_packet() {
     // The stream `/XFA` holds the datasets: the array's `datasets` item, or the XDP stream itself.
