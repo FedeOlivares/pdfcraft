@@ -127,21 +127,47 @@ pub fn template_with_data(rows: usize, data: &str) -> String {
 /// datasets hold `data` (the children of `xfa:data`). No `/NeedsRendering`.
 pub fn static_shell(data: &str) -> Vec<u8> {
     let xdp = format!(
-        "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\"><template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\"><subform name=\"form1\"/></template><xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\"><xfa:data>{data}</xfa:data></xfa:datasets></xdp:xdp>"
+        "<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\"><template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\"><subform name=\"form1\"/></template>{}</xdp:xdp>",
+        static_datasets(data)
     );
-    let objs: Vec<Vec<u8>> = vec![
-        b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /XFA 5 0 R /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> >> >> >> >>".to_vec(),
+    assemble(static_objects(b"5 0 R", &xdp))
+}
+
+/// [`static_shell`] with its packets in an `/XFA` array, as Designer saves them: the preamble in
+/// object 11, the template in 5, the datasets in 12 and the postamble in 13.
+pub fn static_shell_packets(data: &str) -> Vec<u8> {
+    let template = "<template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\"><subform name=\"form1\"/></template>";
+    let mut objs = static_objects(b"[(preamble) 11 0 R (template) 5 0 R (datasets) 12 0 R (postamble) 13 0 R]", template);
+    for packet in ["<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">", static_datasets(data).as_str(), "</xdp:xdp>"] {
+        objs.push(format!("<< /Length {} >>\nstream\n{packet}\nendstream", packet.len()).into_bytes());
+    }
+    assemble(objs)
+}
+
+fn static_datasets(data: &str) -> String {
+    format!("<xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\"><xfa:data>{data}</xfa:data></xfa:datasets>")
+}
+
+/// The ten objects of [`static_shell`]: `/XFA` is `xfa`, and object 5 is a stream of `packet`.
+fn static_objects(xfa: &[u8], packet: &str) -> Vec<Vec<u8>> {
+    let catalog = [
+        &b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /XFA "[..],
+        xfa,
+        b" /Fields [6 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> >> >> >> >>",
+    ]
+    .concat();
+    vec![
+        catalog,
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [8 0 R 9 0 R] >>".to_vec(),
         b"<< /Length 0 >>\nstream\n\nendstream".to_vec(),
-        format!("<< /Length {} >>\nstream\n{xdp}\nendstream", xdp.len()).into_bytes(),
+        format!("<< /Length {} >>\nstream\n{packet}\nendstream", packet.len()).into_bytes(),
         b"<< /T (form1[0]) /Kids [7 0 R] >>".to_vec(),
         b"<< /T (page1[0]) /Parent 6 0 R /Kids [8 0 R 9 0 R] >>".to_vec(),
         b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name[0]) /Parent 7 0 R /Rect [72 700 300 720] /P 3 0 R /DA (/Helv 10 Tf 0 g) /MK << /BC [0 0 0] >> >>".to_vec(),
         b"<< /Type /Annot /Subtype /Widget /FT /Btn /T (agree[0]) /Parent 7 0 R /Rect [72 660 84 672] /P 3 0 R /V /Off /AS /Off /MK << /BC [0 0 0] >> /AP << /N << /1 10 0 R /Off 10 0 R >> >> >>".to_vec(),
         b"<< /Type /XObject /Subtype /Form /BBox [0 0 12 12] /Length 0 >>\nstream\n\nendstream".to_vec(),
-    ];
-    assemble(objs)
+    ]
 }
 
 /// A static XFA form of `n` text fields `form1[0].page1[0].f<i>[0]` on one page, whose values

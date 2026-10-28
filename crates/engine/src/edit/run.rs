@@ -148,7 +148,8 @@ pub(crate) struct EditCtx {
     /// its scripts produced.
     pub(crate) xfa: Option<Arc<pdfcraft_xfa::model::Template>>,
     pub(crate) xfa_out: js::JsOutput,
-    /// The datasets stream this edit wrote (later writes in the edit replace it in place).
+    /// The datasets stream this edit wrote (later writes in the edit replace it in place, as
+    /// they do a packet an earlier edit wrote, which is still one of the document's changes).
     pub(crate) xfa_datasets: Option<pdfcraft_cos::ObjRef>,
     /// A form script ran too long and was abandoned: the document's scripts go off.
     pub(crate) xfa_ran_away: bool,

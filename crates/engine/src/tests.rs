@@ -5660,6 +5660,49 @@ fn static_xfa_forms_take_their_values_from_the_datasets_and_write_them_back() {
     assert!(!d2.info.warnings.iter().any(|w| w.contains("taken from this form's XFA data")), "nothing was rewritten");
 }
 
+/// #5155: filling a static XFA form one field at a time rewrites the datasets packet it wrote
+/// for the first field in place, so the session holds one new packet and a save writes one,
+/// not one per edit (the earlier ones orphaned in the file). Both packet layouts: an `/XFA`
+/// array, as Designer saves forms, and a single XDP stream.
+#[test]
+fn filling_a_static_xfa_form_field_by_field_keeps_one_new_datasets_packet() {
+    // The stream `/XFA` holds the datasets: the array's `datasets` item, or the XDP stream itself.
+    fn datasets_ref(cos: &pdfcraft_cos::Document) -> Option<pdfcraft_cos::ObjRef> {
+        let catalog = cos.get(cos.root()?);
+        let acro = cos.resolve(catalog.as_dict()?.get(b"AcroForm")?);
+        let xfa = acro.as_dict()?.get(b"XFA")?.clone();
+        match &*cos.resolve(&xfa) {
+            pdfcraft_cos::Object::Array(items) => items
+                .chunks(2)
+                .find(|p| p.first().and_then(|n| n.as_string()).is_some_and(|n| n.to_text() == "datasets"))
+                .and_then(|p| p.get(1)?.as_ref()),
+            _ => xfa.as_ref(),
+        }
+    }
+    let data = "<form1><page1><name></name><agree></agree></page1></form1>";
+    for (layout, original) in [("array", pdfcraft_xfa::fixtures::static_shell_packets(data)), ("stream", pdfcraft_xfa::fixtures::static_shell(data))]
+    {
+        let original = Arc::new(original);
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let id = s.open("static.pdf", None, original.clone(), None).expect("opens");
+        let on_opening = datasets_streams(&s.get(id).unwrap().bytes);
+        let packet = |s: &Session| datasets_ref(&s.get(id).unwrap().editor.as_ref().unwrap().cos);
+        let first = packet(&s);
+        s.apply(id, Edit::SetFieldValue { name: "form1[0].page1[0].name[0]".into(), value: FieldValue::Text("c".into()) }).unwrap();
+        let written = packet(&s);
+        assert_ne!(written, first, "{layout}: the first edit writes a packet of its own");
+        s.apply(id, Edit::SetFieldValue { name: "form1[0].page1[0].agree[0]".into(), value: FieldValue::Check(true) }).unwrap();
+        s.apply(id, Edit::SetFieldValue { name: "form1[0].page1[0].name[0]".into(), value: FieldValue::Text("d".into()) }).unwrap();
+        assert_eq!(packet(&s), written, "{layout}: later edits rewrite that packet in place");
+        let saved = s.save_bytes(id).unwrap();
+        assert_eq!(datasets_streams(&saved), on_opening + 1, "{layout}: one datasets packet in the saved revision");
+        let cos = pdfcraft_cos::Document::open(saved).unwrap();
+        let values = pdfcraft_xfa::parse_datasets(&pdfcraft_xfa::read_packets(&cos).unwrap().unwrap().xdp).unwrap();
+        assert_eq!(values.text_at(&pdfcraft_xfa::som_to_path("form1[0].page1[0].name[0]")), Some("d"), "{layout}");
+        assert_eq!(values.text_at(&pdfcraft_xfa::som_to_path("form1[0].page1[0].agree[0]")), Some("1"), "{layout}");
+    }
+}
+
 /// A static XFA form whose values are only in its datasets takes every one on opening, as
 /// filling the fields one at a time would leave it: values, appearances and the note; a
 /// read-only field keeps its own value.
