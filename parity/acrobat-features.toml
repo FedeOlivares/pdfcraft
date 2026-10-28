@@ -3315,8 +3315,8 @@ milestone = "M4"
 status = "shipped"
 commands = []
 tools = ["bookmark_move"]
-evidence = ["crates/ui-egui/tests/it/bookmarks.rs::new_rename_reorder_indent_delete_and_undo", "crates/organize/src/tests.rs::bookmarks_add_rename_move_delete", "crates/engine/src/tests.rs::bookmark_edits_show_in_the_viewer_undo_and_save", "crates/automation/tests/it/automation.rs::bookmarks_through_tools"]
-notes = ""
+evidence = ["crates/ui-egui/tests/it/bookmarks.rs::new_rename_reorder_indent_delete_and_undo", "crates/ui-egui/tests/it/bookmarks.rs::a_cut_bookmark_moves_with_its_children_where_it_is_pasted", "crates/ui-egui/tests/it/bookmarks.rs::a_bookmark_is_not_pasted_into_itself_or_once_the_outline_changed", "crates/organize/src/tests.rs::bookmarks_add_rename_move_delete", "crates/engine/src/tests.rs::bookmark_edits_show_in_the_viewer_undo_and_save", "crates/automation/tests/it/automation.rs::bookmarks_through_tools"]
+notes = "Move up, Move down, Indent and Outdent, and Cut with Paste under / after Selected Bookmark in a bookmark's menu (a subtree moves with its children, one undo step per paste; a paste into the bookmark itself or one of its children is off). The cut bookmark stays in place, faded, until it is pasted; any other outline change ends the cut. Missing: dragging bookmarks, Copy (a duplicated subtree), cut and paste between documents, Cut/Paste on several selected bookmarks at once, and the labels for the two paste items in the translation catalogs."
 
 [[feature]]
 id = "organize.bookmark-set-destination"

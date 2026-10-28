@@ -368,3 +368,63 @@ trailer << /Root 1 0 R >>
     h.run_steps(3);
     assert!(!shown(&h, "Closed child B") && !shown(&h, "Open child B"), "search leaves the open state alone");
 }
+
+/// An outline of A (with child A1), B and C, all expanded.
+fn abc() -> Harness<'static, PdfCraftApp> {
+    use pdfcraft_engine::Edit;
+    let mut h = harness();
+    for (parent, index, title) in [(vec![], 0, "A"), (vec![], 1, "B"), (vec![], 2, "C"), (vec![0], 0, "A1")] {
+        assert!(h.state_mut().apply_edit(Edit::AddBookmark { parent, index, title: title.into(), page: 0, left: None, top: None }));
+    }
+    h.run_steps(3);
+    h.get_by_label("Bookmark options").click();
+    h.run_steps(2);
+    h.get_by_label("Expand all bookmarks").click();
+    h.run_steps(3);
+    h
+}
+
+/// The outline's titles in reading order, two spaces of indent per level.
+fn titles(h: &Harness<'static, PdfCraftApp>) -> Vec<String> {
+    outline(h).into_iter().map(|(title, _, depth)| format!("{}{title}", "  ".repeat(depth))).collect()
+}
+
+/// #3994: Cut and Paste under / after Selected Bookmark move a bookmark with its children, as in
+/// Acrobat's Bookmarks panel, one undo step per paste.
+#[test]
+fn a_cut_bookmark_moves_with_its_children_where_it_is_pasted() {
+    let mut h = abc();
+    assert_eq!(titles(&h), ["A", "  A1", "B", "C"]);
+    menu(&mut h, "A", "Cut");
+    assert_eq!(titles(&h), ["A", "  A1", "B", "C"], "a cut bookmark stays until it is pasted");
+    menu(&mut h, "B", "Paste after Selected Bookmark");
+    assert_eq!(titles(&h), ["B", "A", "  A1", "C"]);
+    menu(&mut h, "C", "Cut");
+    menu(&mut h, "A", "Paste under Selected Bookmark");
+    assert_eq!(titles(&h), ["B", "A", "  A1", "  C"], "as the last child");
+    menu(&mut h, "A1", "Cut");
+    menu(&mut h, "B", "Paste after Selected Bookmark");
+    assert_eq!(titles(&h), ["B", "A1", "A", "  C"], "out to the top level");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(titles(&h), ["B", "A", "  A1", "  C"], "a paste is undone in one step");
+}
+
+#[test]
+fn a_bookmark_is_not_pasted_into_itself_or_once_the_outline_changed() {
+    let mut h = abc();
+    // Nothing cut yet: both pastes are off.
+    menu(&mut h, "B", "Paste after Selected Bookmark");
+    assert_eq!(titles(&h), ["A", "  A1", "B", "C"]);
+    // Into itself or its own child, or after itself: nothing moves.
+    menu(&mut h, "A", "Cut");
+    for (target, paste) in [("A", "Paste under Selected Bookmark"), ("A1", "Paste under Selected Bookmark"), ("A", "Paste after Selected Bookmark")] {
+        menu(&mut h, target, paste);
+        assert_eq!(titles(&h), ["A", "  A1", "B", "C"], "{paste} {target}");
+    }
+    // Any other change to the outline ends the cut: its place may now hold another bookmark.
+    menu(&mut h, "C", "Move up");
+    assert_eq!(titles(&h), ["A", "  A1", "C", "B"]);
+    menu(&mut h, "B", "Paste after Selected Bookmark");
+    assert_eq!(titles(&h), ["A", "  A1", "C", "B"]);
+}

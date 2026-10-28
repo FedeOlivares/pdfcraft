@@ -23,6 +23,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let mut a11y_action: Option<crate::a11y_ui::PanelAction> = None;
     let mut compare_action: Option<crate::compare_ui::PanelAction> = None;
     let mut bm_rename = app.bookmark_rename.clone();
+    let bm_cut = app.bookmark_cut.as_ref().filter(|c| c.doc == id).map(|c| c.path.clone());
     let bm_editable = app.session.get(id).is_some_and(|d| d.allows_assembly() && d.read_only_reason.is_none());
     // Prepare a form is open: the Fields panel orders tabs.
     let preparing = app.is_preparing();
@@ -195,6 +196,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                             expand: bm_expand,
                             matches: &bookmark_matches,
                             searching: !bookmark_query.is_empty(),
+                            cut: bm_cut.as_deref(),
                         };
                         if ctx.searching && bookmark_matches.is_empty() && !info.outline.is_empty() {
                             ui.label(tl!("No matches."));

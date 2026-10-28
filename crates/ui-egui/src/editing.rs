@@ -685,12 +685,26 @@ impl PdfCraftApp {
         let current = self.views[i].current;
         let parent_of = |p: &[usize]| p[..p.len() - 1].to_vec();
         let edit = match action {
+            A::Cut(path) => {
+                let title = self.session.get(id).and_then(|d| bookmark_at(&d.info.outline, &path)).map(|b| b.title.clone());
+                self.bookmark_cut = title.map(|title| BookmarkCut { doc: id, path, title });
+                return;
+            }
+            A::PasteUnder(target) => {
+                let Some(edit) = self.paste_bookmark(id, &target, true) else { return };
+                edit
+            }
+            A::PasteAfter(target) => {
+                let Some(edit) = self.paste_bookmark(id, &target, false) else { return };
+                edit
+            }
             A::New => {
                 let n = self.session.get(id).map_or(0, |d| d.info.outline.len());
                 // Where the reader is: the selection's corner, else the top of the window.
                 let (page, [left, top]) =
                     self.session.get(id).and_then(|d| self.views.get(i)?.bookmark_position(&d.info)).unwrap_or((current, [None, None]));
                 let (left, top) = (left.map(f64::from), top.map(f64::from));
+                self.bookmark_cut = None;
                 self.apply_edit(Edit::AddBookmark { parent: vec![], index: n, title: "Untitled".into(), page, left, top });
                 // Like Acrobat: the new bookmark starts in rename mode.
                 self.bookmark_rename = Some((vec![n], "Untitled".into()));
@@ -731,7 +745,34 @@ impl PdfCraftApp {
                 Edit::BookmarksFromStructure
             }
         };
+        // Any change to the outline, the paste included, can renumber the bookmarks: a cut
+        // waits only for the paste that follows it.
+        self.bookmark_cut = None;
         self.apply_edit(edit);
+    }
+}
+
+/// A bookmark cut in the Bookmarks panel ([`crate::panels::BmAction::Cut`]): where it was and
+/// what it was called, so a paste after the outline changed under it moves nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BookmarkCut {
+    pub(crate) doc: pdfcraft_engine::DocId,
+    pub(crate) path: Vec<usize>,
+    pub(crate) title: String,
+}
+
+impl PdfCraftApp {
+    /// The edit that pastes the cut bookmark under or after `target` in document `id`, or `None`
+    /// when nothing is cut, the cut was made in another document or no longer names the bookmark
+    /// that was cut, or the paste can't be done ([`crate::panels::paste_target`]).
+    fn paste_bookmark(&self, id: pdfcraft_engine::DocId, target: &[usize], under: bool) -> Option<Edit> {
+        let cut = self.bookmark_cut.clone()?;
+        let outline = &self.session.get(id)?.info.outline;
+        if cut.doc != id || bookmark_at(outline, &cut.path).is_none_or(|b| b.title != cut.title) || bookmark_at(outline, target).is_none() {
+            return None;
+        }
+        let (to_parent, index) = crate::panels::paste_target(&cut.path, target, under)?;
+        Some(Edit::MoveBookmark { from: cut.path, to_parent, index })
     }
 }
 

@@ -21,6 +21,31 @@ pub enum BmAction {
     Outdent(Vec<usize>),
     /// Bookmarks from the tagged headings, under a new first "Untitled" bookmark.
     FromStructure,
+    /// Mark the bookmark (and its children) to be moved by the next paste, as Acrobat's Cut.
+    Cut(Vec<usize>),
+    /// Move the cut bookmark in as the last child of this one.
+    PasteUnder(Vec<usize>),
+    /// Move the cut bookmark in right after this one, at its level.
+    PasteAfter(Vec<usize>),
+}
+
+/// Where pasting the bookmark cut at `cut` puts it, as the `to_parent` and `index` of
+/// [`pdfcraft_engine::Edit::MoveBookmark`] (the index counted after the cut one leaves its
+/// place): as the last child of `target` when `under`, else right after `target`. `None` when the
+/// paste means nothing or can't be done: pasting a bookmark into itself or one of its own
+/// children, or right after itself.
+pub(crate) fn paste_target(cut: &[usize], target: &[usize], under: bool) -> Option<(Vec<usize>, usize)> {
+    let (&cut_at, cut_parent) = cut.split_last()?;
+    if under {
+        return (!target.starts_with(cut)).then(|| (target.to_vec(), usize::MAX));
+    }
+    let (&at, parent) = target.split_last()?;
+    if target.starts_with(cut) {
+        return None;
+    }
+    // Leaving its place shifts the siblings after it up by one.
+    let index = if parent == cut_parent && cut_at < at { at } else { at.saturating_add(1) };
+    Some((parent.to_vec(), index))
 }
 
 /// Matching titles plus their ancestors, keeping document paths rather than filtered indexes.
@@ -58,6 +83,8 @@ pub(super) struct OutlineCtx<'a> {
     pub(super) expand: Option<usize>,
     pub(super) matches: &'a std::collections::HashSet<Vec<usize>>,
     pub(super) searching: bool,
+    /// The bookmark cut in this document, waiting for a paste.
+    pub(super) cut: Option<&'a [usize]>,
 }
 
 /// The destination page label gets its own right-aligned column in a bookmark row; drawing
@@ -169,7 +196,11 @@ pub(super) fn outline_item(
         });
         let label_w = label_galley.as_ref().map_or(0.0, |g| g.size().x);
         let wrap_w = (ui.available_width() - indent - 20.0 - label_w - 12.0).max(60.0);
-        let mut job = egui::text::LayoutJob::single_section(item.title.clone(), title_format(item, depth, t));
+        let mut format = title_format(item, depth, t);
+        if cx.cut == Some(path) {
+            format.color = format.color.gamma_multiply(0.45);
+        }
+        let mut job = egui::text::LayoutJob::single_section(item.title.clone(), format);
         job.wrap.max_width = wrap_w;
         let galley = ui.fonts_mut(|f| f.layout_job(job));
         let h = (galley.size().y + 12.0).max(28.0);
@@ -204,6 +235,8 @@ pub(super) fn outline_item(
             && let Some(&i) = path.last()
         {
             let current = cx.current;
+            let paste = |under| cx.cut.and_then(|c| paste_target(c, path, under)).is_some();
+            let (paste_under, paste_after) = (paste(true), paste(false));
             resp.context_menu(|ui| {
                 let mut pick = |ui: &mut egui::Ui, label: &str, enabled: bool, a: BmAction| {
                     if ui.add_enabled(enabled, egui::Button::new(tl!(label))).clicked() {
@@ -240,6 +273,12 @@ pub(super) fn outline_item(
                 pick(ui, tl!("Indent"), i > 0, BmAction::Indent(path.to_vec()));
                 pick(ui, tl!("Outdent"), depth > 0, BmAction::Outdent(path.to_vec()));
                 ui.separator();
+                // Cut and paste move a bookmark with its children anywhere in the outline, as in
+                // Acrobat's Bookmarks panel: the cut one stays in place, faded, until it is pasted.
+                pick(ui, tl!("Cut"), true, BmAction::Cut(path.to_vec()));
+                pick(ui, tl!("Paste under Selected Bookmark"), paste_under, BmAction::PasteUnder(path.to_vec()));
+                pick(ui, tl!("Paste after Selected Bookmark"), paste_after, BmAction::PasteAfter(path.to_vec()));
+                ui.separator();
                 pick(ui, tl!("Delete"), true, BmAction::Delete(path.to_vec()));
                 if let Some(a) = styled {
                     *cx.action = Some(a);
@@ -253,6 +292,35 @@ pub(super) fn outline_item(
             p.push(ci);
             outline_item(ui, t, info, c, &p, item.children.len(), cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod paste {
+    use super::paste_target;
+
+    #[test]
+    fn a_pasted_bookmark_lands_where_it_was_asked_once_it_left_its_place() {
+        // After a later sibling: the target moved up one when the cut one left.
+        assert_eq!(paste_target(&[0], &[2], false), Some((vec![], 2)));
+        // After an earlier sibling, and after a bookmark at another level.
+        assert_eq!(paste_target(&[3], &[1], false), Some((vec![], 2)));
+        assert_eq!(paste_target(&[1, 0], &[0], false), Some((vec![], 1)));
+        assert_eq!(paste_target(&[0], &[2, 4], false), Some((vec![2], 5)));
+        // Under any bookmark it is the last child.
+        assert_eq!(paste_target(&[0], &[2], true), Some((vec![2], usize::MAX)));
+        assert_eq!(paste_target(&[2, 1], &[2], true), Some((vec![2], usize::MAX)));
+    }
+
+    #[test]
+    fn a_bookmark_is_never_pasted_into_itself() {
+        assert_eq!(paste_target(&[1], &[1], true), None);
+        assert_eq!(paste_target(&[1], &[1, 0, 3], true), None);
+        assert_eq!(paste_target(&[1], &[1], false), None);
+        assert_eq!(paste_target(&[1], &[1, 2], false), None);
+        // Nothing cut, or no target: nothing to do.
+        assert_eq!(paste_target(&[], &[0], false), None);
+        assert_eq!(paste_target(&[0], &[], false), None);
     }
 }
 

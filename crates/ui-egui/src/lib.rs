@@ -555,6 +555,8 @@ pub struct PdfCraftApp {
     control: Option<control::Control>,
     /// A bookmark being renamed in the Bookmarks panel: (path, text so far).
     pub bookmark_rename: Option<(Vec<usize>, String)>,
+    /// The bookmark cut in the Bookmarks panel, waiting for a paste.
+    pub(crate) bookmark_cut: Option<editing::BookmarkCut>,
     /// Number pages dialog settings (1-based pages).
     pub number_draft: NumberDraft,
     pub(crate) word_count_draft: word_count_ui::Draft,
