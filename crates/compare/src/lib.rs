@@ -61,6 +61,10 @@ pub struct Comparison {
     /// Words in each document.
     pub old_words: usize,
     pub new_words: usize,
+    /// For each page of the new document, its counterpart in the old one ([`page_pairs`]);
+    /// empty when the caller did not work it out ([`compare`] alone does not know the page
+    /// counts).
+    pub pages: Vec<Option<usize>>,
 }
 
 impl Comparison {
@@ -250,12 +254,18 @@ fn side(words: &[&Word], neighbour: Option<&Word>) -> Side {
     }
 }
 
-/// Compare two documents' words.
-pub fn compare(old: &[Word], new: &[Word]) -> Comparison {
+/// The edit script from `old`'s words to `new`'s.
+fn word_ops(old: &[Word], new: &[Word]) -> Vec<Op> {
     let a: Vec<u64> = old.iter().map(|w| hash(&w.text)).collect();
     let b: Vec<u64> = new.iter().map(|w| hash(&w.text)).collect();
     let mut ops = Vec::with_capacity(a.len().max(b.len()));
     diff(&a, &b, &mut ops, 0);
+    ops
+}
+
+/// Compare two documents' words.
+pub fn compare(old: &[Word], new: &[Word]) -> Comparison {
+    let ops = word_ops(old, new);
 
     let mut changes = Vec::new();
     let (mut i, mut j) = (0usize, 0usize);
@@ -291,7 +301,152 @@ pub fn compare(old: &[Word], new: &[Word]) -> Comparison {
         let new_near = new.get(j).or_else(|| new.last());
         changes.push(Change { kind, old: side(&del, old_near), new: side(&ins, new_near) });
     }
-    Comparison { changes, old_words: old.len(), new_words: new.len() }
+    Comparison { changes, old_words: old.len(), new_words: new.len(), pages: Vec::new() }
+}
+
+/// Which page of the old document each page of the new one corresponds to, so pages are compared
+/// with their counterparts rather than with whatever page has the same number: after a page is
+/// inserted or deleted, the pages that follow still pair up. `None` marks a page the new
+/// document added (or rewrote completely).
+///
+/// Pages pair by the words the text comparison keeps unchanged: each new page proposes the old
+/// page it shares the most unchanged words with, and the heaviest chain of proposals in page
+/// order on both sides is kept, so pairs never cross and no old page is used twice. Between two
+/// pairs, the pages neither side matched by text pair up in order when both runs are the same
+/// length (pages without text, or with every word changed, so documents without text, or with
+/// the same page count and nothing in common, still pair page n with page n); otherwise only
+/// pages without words pair, in order. Words on pages past `old_pages` or `new_pages` are
+/// ignored.
+pub fn page_pairs(old: &[Word], new: &[Word], old_pages: usize, new_pages: usize) -> Vec<Option<usize>> {
+    use std::collections::HashMap;
+    let mut shared: HashMap<(usize, usize), usize> = HashMap::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    for op in word_ops(old, new) {
+        match op {
+            Op::Equal => {
+                if let (Some(a), Some(b)) = (old.get(i), new.get(j))
+                    && a.page < old_pages
+                    && b.page < new_pages
+                {
+                    *shared.entry((b.page, a.page)).or_insert(0) += 1;
+                }
+                i += 1;
+                j += 1;
+            }
+            Op::Delete => i += 1,
+            Op::Insert => j += 1,
+        }
+    }
+    // Each new page's proposal: the old page sharing the most words (the nearer page on a tie).
+    let mut proposal: Vec<Option<(usize, usize)>> = vec![None; new_pages];
+    for (&(n, o), &count) in &shared {
+        if let Some(slot) = proposal.get_mut(n) {
+            let better = slot.is_none_or(|(po, pc)| count > pc || (count == pc && (o.abs_diff(n), o) < (po.abs_diff(n), po)));
+            if better {
+                *slot = Some((o, count));
+            }
+        }
+    }
+    let mut pairs = heaviest_chain(&proposal, old_pages);
+    fill_gaps(&mut pairs, old, new, old_pages);
+    pairs
+}
+
+/// The proposals (new page → (old page, weight)) forming the heaviest chain whose old pages
+/// strictly increase with the new pages: a weighted longest increasing subsequence, with a
+/// Fenwick tree of the best chain ending at or before each old page.
+fn heaviest_chain(proposal: &[Option<(usize, usize)>], old_pages: usize) -> Vec<Option<usize>> {
+    // tree[k] holds (weight, new page) of the best chain ending at an old page ≤ k (1-based).
+    let mut tree: Vec<(usize, usize)> = vec![(0, usize::MAX); old_pages + 1];
+    let best_before = |tree: &[(usize, usize)], mut k: usize| {
+        let mut best = (0, usize::MAX);
+        while k > 0 {
+            if let Some(&t) = tree.get(k)
+                && t.0 > best.0
+            {
+                best = t;
+            }
+            k &= k - 1;
+        }
+        best
+    };
+    let mut back: Vec<usize> = vec![usize::MAX; proposal.len()];
+    let mut end = (0, usize::MAX);
+    for (n, p) in proposal.iter().enumerate() {
+        let Some((o, w)) = *p else { continue };
+        if o >= old_pages {
+            continue;
+        }
+        let (before, from) = best_before(&tree, o);
+        let total = before.saturating_add(w);
+        if let Some(b) = back.get_mut(n) {
+            *b = from;
+        }
+        if total > end.0 {
+            end = (total, n);
+        }
+        let mut k = o + 1;
+        while let Some(t) = tree.get_mut(k) {
+            if total > t.0 {
+                *t = (total, n);
+            }
+            k += k & k.wrapping_neg();
+        }
+    }
+    let mut pairs = vec![None; proposal.len()];
+    let mut n = end.1;
+    while let Some(Some((o, _))) = proposal.get(n) {
+        if let Some(slot) = pairs.get_mut(n) {
+            *slot = Some(*o);
+        }
+        n = back.get(n).copied().unwrap_or(usize::MAX);
+    }
+    pairs
+}
+
+/// Pair the pages left between two text-matched pairs (see [`page_pairs`]).
+fn fill_gaps(pairs: &mut [Option<usize>], old: &[Word], new: &[Word], old_pages: usize) {
+    let with_words = |words: &[Word], pages: usize| {
+        let mut has = vec![false; pages];
+        for w in words {
+            if let Some(h) = has.get_mut(w.page) {
+                *h = true;
+            }
+        }
+        has
+    };
+    let (old_text, new_text) = (with_words(old, old_pages), with_words(new, pairs.len()));
+    let mut used = vec![false; old_pages];
+    for o in pairs.iter().flatten() {
+        if let Some(u) = used.get_mut(*o) {
+            *u = true;
+        }
+    }
+    // Walk the runs between pairs: (first unpaired new page, first unpaired old page).
+    let (mut n0, mut o0) = (0usize, 0usize);
+    let mut n = 0;
+    while n <= pairs.len() {
+        let anchor = if n == pairs.len() { Some(old_pages) } else { pairs.get(n).copied().flatten() };
+        if let Some(o1) = anchor {
+            let news: Vec<usize> = (n0..n).collect();
+            let olds: Vec<usize> = (o0..o1.min(old_pages)).filter(|o| !used.get(*o).copied().unwrap_or(true)).collect();
+            let matched: Vec<(usize, usize)> = if news.len() == olds.len() {
+                news.into_iter().zip(olds).collect()
+            } else {
+                let blank_new = news.into_iter().filter(|p| !new_text.get(*p).copied().unwrap_or(false));
+                let blank_old = olds.into_iter().filter(|p| !old_text.get(*p).copied().unwrap_or(false));
+                blank_new.zip(blank_old).collect()
+            };
+            for (p, o) in matched {
+                if let Some(slot) = pairs.get_mut(p) {
+                    *slot = Some(o);
+                }
+            }
+            n0 = n + 1;
+            o0 = o1.saturating_add(1);
+        }
+        n += 1;
+    }
 }
 
 /// The compare report's text: a summary, then each change with its pages.
@@ -385,6 +540,56 @@ mod tests {
         let c = compare(&old, &new);
         assert_eq!(c.changes.len(), 5, "{:?}", c.changes.iter().map(|x| (x.kind, &x.old.text, &x.new.text)).collect::<Vec<_>>());
         assert_eq!(c.count(Kind::Replaced), 4);
+    }
+
+    /// Words for `pages`, each page's text in turn (an empty string is a page without text).
+    fn pages(texts: &[&str]) -> Vec<Word> {
+        texts.iter().enumerate().flat_map(|(p, t)| words(t, p)).collect()
+    }
+
+    #[test]
+    fn pages_pair_with_their_counterparts_after_an_inserted_or_deleted_page() {
+        let old = pages(&["one alpha beta", "two gamma delta", "three epsilon zeta"]);
+        // A page inserted before the second: the old second and third pages follow it.
+        let new = pages(&["one alpha beta", "an inserted page", "two gamma delta", "three epsilon zeta"]);
+        assert_eq!(page_pairs(&old, &new, 3, 4), [Some(0), None, Some(1), Some(2)]);
+        // The second page deleted: the third pairs with the old third.
+        let new = pages(&["one alpha beta", "three epsilon zeta"]);
+        assert_eq!(page_pairs(&old, &new, 3, 2), [Some(0), Some(2)]);
+        // Unchanged documents pair page n with page n.
+        assert_eq!(page_pairs(&old, &old, 3, 3), [Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn pages_without_text_pair_in_order_between_matched_pages() {
+        // No text at all: page n with page n, as far as both go.
+        assert_eq!(page_pairs(&[], &[], 3, 2), [Some(0), Some(1)]);
+        // A picture page between two text pages, and a blank page inserted beside it.
+        let old = pages(&["first page words", "", "last page words"]);
+        let new = pages(&["first page words", "", "", "last page words"]);
+        assert_eq!(page_pairs(&old, &new, 3, 4), [Some(0), Some(1), None, Some(2)]);
+        // Every word rewritten on a page of a run as long on both sides: still the same page.
+        let new = pages(&["first page words", "", "last page words"]);
+        let old = pages(&["first page words", "", "something else entirely"]);
+        assert_eq!(page_pairs(&old, &new, 3, 3)[1], Some(1));
+    }
+
+    #[test]
+    fn page_pairs_never_cross_or_reuse_an_old_page() {
+        // Pages moved: the second and third swap. Only one order can be kept.
+        let old = pages(&["one alpha beta", "two gamma delta", "three epsilon zeta eta"]);
+        let new = pages(&["one alpha beta", "three epsilon zeta eta", "two gamma delta"]);
+        let got = page_pairs(&old, &new, 3, 3);
+        let kept: Vec<usize> = got.iter().flatten().copied().collect();
+        assert!(kept.windows(2).all(|w| w[0] < w[1]), "{got:?}");
+        assert_eq!(got[0], Some(0));
+        // A page repeated in the new document pairs once.
+        let new = pages(&["one alpha beta", "one alpha beta"]);
+        assert_eq!(page_pairs(&old, &new, 3, 2).iter().flatten().count(), 1);
+        // Words claiming pages past the counts are ignored, not indexed.
+        let stray = vec![Word { text: "one".into(), page: 9, rect: [0.0; 4] }];
+        assert_eq!(page_pairs(&stray, &stray, 1, 1), [Some(0)]);
+        assert!(page_pairs(&old, &new, 0, 0).is_empty());
     }
 
     #[test]

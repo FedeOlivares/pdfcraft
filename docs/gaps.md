@@ -1,5 +1,7 @@
 # Where PdfCraft falls short of Acrobat Pro
 
+> **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-28 · **Change:** minor (gap 21: compared pages pair by unchanged text across inserted and deleted pages, and side-by-side scrolling follows the pairing; estimates unchanged)
+
 > **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** minor (gaps 5 and 14 current state: native release Hans face via LXGW WenKai Lite; Arabic logical catalog, explicit RTL direction and mirrored stock chrome, with native/browser/IME workflows unqualified; no readiness re-estimate)
 
 > **Last reviewed:** 2026-10-15 · **Last updated:** 2026-10-19 · **Change:** minor (gap 2: composite fonts with `/ToUnicode /Identity-H` read as Unicode, hayro-interpret patch 44; estimates unchanged) · **Target:** Adobe Acrobat Pro (Acrobat DC, continuous track 26.002.21931, macOS)
@@ -372,9 +374,12 @@ update the numbers.
 - **Done:** the synchronised side-by-side view; the Compare panel's Show: Text / Visual filter
   (Text hides the text changes from the list and the shading, Visual hides the visual differences
   from the shading; they are counted, not listed).
+- **Done (2026-10-28):** pages pair by the words the text comparison keeps unchanged, so the
+  visual comparison, the old half's shading and side-by-side scrolling follow a page's
+  counterpart across inserted and deleted pages; a page the new file added is one visual region.
 - **Missing:** telling images, annotations, formatting and background/header-footer changes apart
-  (all of them are Visual today), scrolling the two halves by matching content rather than by
-  offset, page ranges, scanned documents.
+  (all of them are Visual today), matching content within paired pages of different sizes,
+  page ranges, scanned documents (pairing needs text).
 - **Estimate:** 8–16 h. **Doc:** [target-app-parity.md](target-app-parity.md).
 
 ### 22. PDF 2.0 extras, linearization, Arlington validation

@@ -14,7 +14,8 @@ pub struct CompareState {
     pub old: DocId,
     pub new: DocId,
     pub result: Comparison,
-    /// Regions that look different (page, user-space box), page n against page n.
+    /// Regions that look different (page, user-space box), each new page against its counterpart
+    /// (`result.pages`).
     pub visual: Vec<(usize, [f64; 4])>,
     pub selected: Option<usize>,
     /// Side by side: the old file on the left, the new on the right, scrolled and zoomed
@@ -193,7 +194,7 @@ impl PdfCraftApp {
         let Some(old) = self.compare_old else { return };
         match self.session.compare(old, new) {
             Ok(result) => {
-                let visual = self.session.compare_visual(old, new, 72.0).unwrap_or_default();
+                let visual = self.session.compare_visual(old, new, 72.0, &result.pages).unwrap_or_default();
                 let n = result.changes.len();
                 // Side by side when the old version is open in a tab and the window has the room.
                 let side_by_side = self.views.iter().any(|v| v.id == old) && self.ctx.as_ref().is_none_or(|c| c.content_rect().width() >= 1000.0);
@@ -316,10 +317,14 @@ fn shading(s: &CompareState, old: bool) -> Vec<(usize, [f32; 4], Color32)> {
     }
     let mut visual = Vec::new();
     for (p, r) in &s.visual {
+        // A region is found on a new page; the old half shades it on that page's counterpart, and
+        // not at all on a page the new file added.
+        let page = if !old || s.result.pages.is_empty() { Some(*p) } else { s.result.pages.get(*p).copied().flatten() };
+        let Some(p) = page else { continue };
         let r = r.map(|v| v as f32);
         // The old file's half also skips a region overlapping one it already shades.
-        if !overlaps(*p, r, &text) && !(old && overlaps(*p, r, &visual)) {
-            visual.push((*p, r, VISUAL));
+        if !overlaps(p, r, &text) && !(old && overlaps(p, r, &visual)) {
+            visual.push((p, r, VISUAL));
         }
     }
     let mut out = if s.show_text { text } else { Vec::new() };
@@ -340,7 +345,8 @@ pub(crate) fn side_by_side(app: &PdfCraftApp, index: usize) -> Option<(usize, us
 
 /// Side by side: the old file on the left, the new on the right, each a page view of its own
 /// with its shading, scrolled and zoomed together. The half the pointer is over leads; the
-/// other follows its zoom, layout and scroll offset.
+/// other follows its zoom and layout, and scrolls to the counterpart of the page at the leader's
+/// top (`Comparison::pages`), so pages after an inserted or deleted one stay side by side.
 pub(crate) fn compare_area(app: &mut PdfCraftApp, old: usize, new: usize, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let rect = ui.available_rect_before_wrap();
@@ -408,16 +414,37 @@ pub(crate) fn compare_area(app: &mut PdfCraftApp, old: usize, new: usize, ui: &m
         child.set_clip_rect(body);
         crate::canvas::document_area(app, index, &mut child);
     }
-    // After both drew: the leader's scroll, when it moved, is the follower's next offset.
+    // After both drew: when the leader's scroll moved, the follower goes to the same place on
+    // the counterpart of the leader's top page, or, when that is the page with the same number,
+    // takes the leader's offset.
     let (Some(old), Some(new)) = (find(app, ids[0]), find(app, ids[1])) else { return };
-    let follow = if leader == 0 { new } else { old };
+    let (lead, follow) = if leader == 0 { (old, new) } else { (new, old) };
     let offsets = [app.views[old].last_scroll, app.views[new].last_scroll];
+    let top = app.views[lead].top_of_view();
     if let Some(c) = app.compare.as_mut() {
         let lead_k = if leader == 0 { 0 } else { 1 };
-        if (offsets[lead_k] - c.prev_scroll[lead_k]).length() > 0.5 && (offsets[1 - lead_k] - offsets[lead_k]).length() > 0.5 {
-            app.views[follow].sync_scroll = Some(offsets[lead_k]);
+        if (offsets[lead_k] - c.prev_scroll[lead_k]).length() > 0.5 {
+            match top.map(|(page, frac)| (page, counterpart(&c.result.pages, page, leader == 1), frac)) {
+                Some((page, Some(other), frac)) if other != page => app.views[follow].goto = Some((other, frac)),
+                // The leader's top page is one the other file lacks: the follower stays.
+                Some((_, None, _)) => {}
+                _ if (offsets[1 - lead_k] - offsets[lead_k]).length() > 0.5 => app.views[follow].sync_scroll = Some(offsets[lead_k]),
+                _ => {}
+            }
             ui.ctx().request_repaint();
         }
         c.prev_scroll = offsets;
+    }
+}
+
+/// The page on the other side of a comparison that `page` pairs with: an old page for a new one
+/// (`from_new`), a new page for an old one. Empty `pages` pair page n with page n.
+fn counterpart(pages: &[Option<usize>], page: usize, from_new: bool) -> Option<usize> {
+    if pages.is_empty() {
+        Some(page)
+    } else if from_new {
+        pages.get(page).copied().flatten()
+    } else {
+        pages.iter().position(|p| *p == Some(page))
     }
 }

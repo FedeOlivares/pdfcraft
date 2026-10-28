@@ -6731,6 +6731,14 @@ fn comparing_documents_through_tools() {
     assert_eq!(r["changes"][0]["old"]["text"], "900");
     assert_eq!(r["changes"][0]["new"]["text"], "950");
     assert_eq!(r["changes"][0]["new"]["page"], 1);
+    assert_eq!(r["pages"], json!([1]), "the one new page pairs with the one old page");
+    // A page inserted before the text: the text's page pairs with the old first page.
+    let v3 = ok(&mut a, "doc_create", json!({ "from": "text", "text": "A new cover page.\u{c}Rent is 900 per month. Pets are not allowed." }))["doc"]
+        .as_u64()
+        .unwrap();
+    let r = ok(&mut a, "doc_compare", json!({ "doc": v3, "other": v1, "visual": true }));
+    assert_eq!(r["pages"], json!([null, 1]), "{r}");
+    assert_eq!(r["visual"].as_array().unwrap().iter().map(|v| v["page"].as_u64()).collect::<Vec<_>>(), [Some(1)], "only the cover differs: {r}");
     ok(&mut a, "doc_compare_report", json!({ "doc": v2, "other": v1, "path": "report.pdf" }));
     assert!(std::fs::read(dir.join("report.pdf")).unwrap().starts_with(b"%PDF"));
     assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": v2, "other": v1 }))["comments"], 3);

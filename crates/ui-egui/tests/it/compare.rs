@@ -160,6 +160,56 @@ fn compare_filters_hide_text_or_visual_changes() {
     assert_eq!(kinds(&h, old_i), (text_old, 0));
 }
 
+/// A page inserted into the newer version: the visual difference found on a later new page is
+/// shaded on the old file at that page's counterpart, not at the same page number.
+#[test]
+fn visual_differences_shade_the_counterpart_page_on_the_old_file() {
+    let mut s = Session::new();
+    let v1 = s.create_from_text("t", "Alpha opens the report.\u{c}Bravo closes it.").unwrap().to_vec();
+    let text = s.create_from_text("t", "Alpha opens the report.\u{c}A whole new page of figures.\u{c}Bravo closes it.").unwrap();
+    let id = s.open("v2.pdf", None, text, None).unwrap();
+    // A rectangle far below the text of the last page (the old file's second).
+    let square = pdfcraft_engine::Shape::Rectangle { rect: [100.0, 80.0, 300.0, 200.0] };
+    let style = pdfcraft_engine::Style::default_for(&square);
+    let new = pdfcraft_engine::NewAnnotation { page: 2, shape: square, style, contents: String::new(), author: "Ada".into() };
+    s.apply(id, pdfcraft_engine::Edit::AddAnnotation(new)).unwrap();
+    let v2 = s.save_bytes(id).unwrap().to_vec();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("v1.pdf", None, v1.clone()).unwrap();
+        app.open_bytes("v2.pdf", None, v2.clone()).unwrap();
+        app
+    });
+    h.run_steps(4);
+    h.state_mut().compare_old = h.state().views.first().map(|v| v.id);
+    h.state_mut().run_compare();
+    h.run_steps(3);
+    assert_eq!(h.state().compare.as_ref().unwrap().result.pages, [Some(0), None, Some(1)]);
+    let new_i = h.state().active_ids().unwrap().0;
+    let old_i = h.state().views.iter().position(|v| v.id == h.state().compare.as_ref().unwrap().old).unwrap();
+    let visual = egui::Color32::from_rgb(0xF0, 0x8C, 0x1A);
+    let pages = |h: &Harness<'_, PdfCraftApp>, i: usize| {
+        let mut p: Vec<usize> = h.state().views[i].compare_marks.iter().filter(|m| m.2 == visual).map(|m| m.0).collect();
+        p.dedup();
+        p
+    };
+    assert_eq!(pages(&h, new_i), [2], "the rectangle on the new file's last page");
+    assert_eq!(pages(&h, old_i), [1], "and on the old file's page it pairs with");
+
+    // Side by side, scrolling the new file to its last page brings the old file to its second.
+    assert!(h.state().compare.as_ref().unwrap().side_by_side);
+    let top_page = |h: &Harness<'_, PdfCraftApp>, i: usize| {
+        let v = &h.state().views[i];
+        let top = v.viewport_rect().top() + 40.0;
+        v.visible_page_rects().into_iter().find(|(_, r)| r.top() <= top && r.bottom() > top).map(|(p, _)| p)
+    };
+    h.state_mut().views[new_i].goto = Some((2, 0.0));
+    h.run_steps(6);
+    assert_eq!(top_page(&h, new_i), Some(2));
+    assert_eq!(top_page(&h, old_i), Some(1), "the old half shows the counterpart, not page 3 (which it lacks)");
+}
+
 /// Writes a screenshot of the Compare panel when PDFCRAFT_SHOT is set (for review).
 #[test]
 fn compare_panel_screenshot() {

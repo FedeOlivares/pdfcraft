@@ -187,7 +187,12 @@ impl Automation {
             .map(|ch| json!({ "kind": ch.kind.label().to_lowercase(), "old": side(&ch.old), "new": side(&ch.new) }))
             .collect();
         let visual: Vec<Value> = if a.opt_bool("visual")?.unwrap_or(false) {
-            self.session.compare_visual(old, new, 72.0).map_err(failed)?.iter().map(|(p, r)| json!({ "page": p + 1, "rect": r2(r) })).collect()
+            self.session
+                .compare_visual(old, new, 72.0, &c.pages)
+                .map_err(failed)?
+                .iter()
+                .map(|(p, r)| json!({ "page": p + 1, "rect": r2(r) }))
+                .collect()
         } else {
             Vec::new()
         };
@@ -199,6 +204,8 @@ impl Automation {
             "deleted": c.count(Kind::Deleted),
             "old_words": c.old_words,
             "new_words": c.new_words,
+            // Entry n: the old page (1-based) that new page n + 1 corresponds to, or null.
+            "pages": c.pages.iter().map(|p| p.map(|o| o + 1)).collect::<Vec<_>>(),
             "changes": list,
         }))
     }

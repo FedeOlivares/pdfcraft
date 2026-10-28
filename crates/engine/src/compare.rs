@@ -53,19 +53,25 @@ impl crate::Document {
 }
 
 impl Session {
-    /// Compare files: the text differences from document `old` to document `new`. The result
-    /// carries both documents' text, so both must allow copying it.
+    /// Compare files: the text differences from document `old` to document `new`, and which old
+    /// page each new page corresponds to (`Comparison::pages`). The result carries both
+    /// documents' text, so both must allow copying it.
     pub fn compare(&self, old: DocId, new: DocId) -> Result<Comparison, EditError> {
         let a = self.get(old).ok_or(EditError::NoDocument)?;
         let b = self.get(new).ok_or(EditError::NoDocument)?;
         a.check_copying()?;
         b.check_copying()?;
-        Ok(pdfcraft_compare::compare(&a.words(), &b.words()))
+        let (wa, wb) = (a.words(), b.words());
+        let mut c = pdfcraft_compare::compare(&wa, &wb);
+        c.pages = pdfcraft_compare::page_pairs(&wa, &wb, a.info.pages.len(), b.info.pages.len());
+        Ok(c)
     }
 
-    /// Visual compare: regions where page n of `new` looks different from page n of `old`
-    /// (rendered at `dpi`), as (page, user-space box in `new`).
-    pub fn compare_visual(&self, old: DocId, new: DocId, dpi: f32) -> Result<Vec<(usize, [f64; 4])>, EditError> {
+    /// Visual compare: regions where a page of `new` looks different from its counterpart in
+    /// `old` (rendered at `dpi`), as (page, user-space box in `new`). `pages` pairs the pages
+    /// (`Comparison::pages`: page n of `new` with old page `pages[n]`); an empty slice pairs page
+    /// n with page n. A page with no counterpart (one `new` added) is one region, the whole page.
+    pub fn compare_visual(&self, old: DocId, new: DocId, dpi: f32, pages: &[Option<usize>]) -> Result<Vec<(usize, [f64; 4])>, EditError> {
         let a = self.get(old).ok_or(EditError::NoDocument)?;
         let b = self.get(new).ok_or(EditError::NoDocument)?;
         let renderer = |d: &crate::Document| {
@@ -77,17 +83,28 @@ impl Session {
         let (mut ra, mut rb) = (renderer(a), renderer(b));
         let scale = dpi.clamp(18.0, 150.0) / 72.0;
         let mut out = Vec::new();
-        for (page, info) in b.info.pages.iter().enumerate().take(a.info.pages.len()) {
-            let req = pdfcraft_render::RenderRequest { page, scale, ..Default::default() };
-            let (x, y) = (ra.render(req), rb.render(req));
+        // The user-space box of view rectangle `[x0, y0, x1, y1]` (points, y down) on a page.
+        let user_box = |info: &pdfcraft_render::PageInfo, r: [f32; 4]| {
+            let p = info.view_to_user(r[0], r[1]);
+            let q = info.view_to_user(r[2], r[3]);
+            [p[0].min(q[0]) as f64, p[1].min(q[1]) as f64, p[0].max(q[0]) as f64, p[1].max(q[1]) as f64]
+        };
+        for (page, info) in b.info.pages.iter().enumerate() {
+            let counterpart = if pages.is_empty() { Some(page) } else { pages.get(page).copied().flatten() };
+            let Some(old_page) = counterpart.filter(|p| *p < a.info.pages.len()) else {
+                out.push((page, info.crop.map(f64::from)));
+                continue;
+            };
+            let (x, y) = (
+                ra.render(pdfcraft_render::RenderRequest { page: old_page, scale, ..Default::default() }),
+                rb.render(pdfcraft_render::RenderRequest { page, scale, ..Default::default() }),
+            );
             if x.error.is_some() || y.error.is_some() {
                 continue;
             }
             let s = y.width as f32 / info.width.max(1e-3);
             for r in pdfcraft_compare::visual_regions((&y.rgba, y.width, y.height), (&x.rgba, x.width, x.height), 24) {
-                let p = info.view_to_user(r[0] as f32 / s, r[1] as f32 / s);
-                let q = info.view_to_user(r[2] as f32 / s, r[3] as f32 / s);
-                out.push((page, [p[0].min(q[0]) as f64, p[1].min(q[1]) as f64, p[0].max(q[0]) as f64, p[1].max(q[1]) as f64]));
+                out.push((page, user_box(info, [r[0] as f32 / s, r[1] as f32 / s, r[2] as f32 / s, r[3] as f32 / s])));
             }
         }
         Ok(out)

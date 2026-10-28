@@ -5205,6 +5205,32 @@ fn detecting_comb_boxes_adds_one_comb_field_per_row() {
     assert_eq!(d.can_undo(), Some("Detect form fields"));
 }
 
+/// A page inserted into the newer version: the pages after it are compared with their
+/// counterparts, not with the page that has the same number, so only the new page differs.
+#[test]
+fn comparing_pairs_pages_across_an_inserted_page() {
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let v1 = s.create_from_text("t", "Alpha opens the report.\u{c}Bravo follows on page two.\u{c}Charlie closes it.").unwrap();
+    let v2 = s
+        .create_from_text("t", "Alpha opens the report.\u{c}A whole new page of figures.\u{c}Bravo follows on page two.\u{c}Charlie closes it.")
+        .unwrap();
+    let old = s.open("v1.pdf", None, v1, None).unwrap();
+    let new = s.open("v2.pdf", None, v2, None).unwrap();
+    let c = s.compare(old, new).unwrap();
+    assert_eq!(c.pages, [Some(0), None, Some(1), Some(2)]);
+    let got: Vec<(compare::Kind, &str, usize)> = c.changes.iter().map(|x| (x.kind, x.new.text.as_str(), x.new.page)).collect();
+    assert_eq!(got, [(compare::Kind::Inserted, "A whole new page of figures.", 1)], "{got:?}");
+
+    // Paired, the only visual difference is the inserted page, as a whole.
+    let crop = s.get(new).unwrap().info.pages[1].crop.map(f64::from);
+    let vis = s.compare_visual(old, new, 72.0, &c.pages).unwrap();
+    assert_eq!(vis, [(1, crop)]);
+    // Page n against page n, every page from the insertion on differs.
+    let by_number = s.compare_visual(old, new, 72.0, &[]).unwrap();
+    let pages: std::collections::BTreeSet<usize> = by_number.iter().map(|(p, _)| *p).collect();
+    assert_eq!(pages.into_iter().collect::<Vec<_>>(), [1, 2, 3], "{by_number:?}");
+}
+
 #[test]
 fn comparing_two_versions_of_a_document() {
     let mut s = Session::new().with_clock(|| 1_700_000_000);
@@ -5225,9 +5251,10 @@ fn comparing_two_versions_of_a_document() {
     assert!(text.contains("2 changes: 2 replaced") && text.contains("Tuesday."), "{text}");
 
     // Visually, only the changed words' places differ (and the page is otherwise the same).
-    let vis = s.compare_visual(old, new, 72.0).unwrap();
+    assert_eq!(c.pages, [Some(0)]);
+    let vis = s.compare_visual(old, new, 72.0, &c.pages).unwrap();
     assert!(!vis.is_empty() && vis.iter().all(|(p, r)| *p == 0 && r[3] > 600.0), "{vis:?}");
-    assert!(s.compare_visual(old, old, 72.0).unwrap().is_empty());
+    assert!(s.compare_visual(old, old, 72.0, &[]).unwrap().is_empty());
 
     assert_eq!(s.mark_differences(old, new).unwrap(), 2);
     let d = s.get(new).unwrap();

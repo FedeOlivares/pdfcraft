@@ -16,6 +16,22 @@ impl DocView {
         self.screen_xforms.iter().map(|(p, xf)| (*p, xf.rect)).collect()
     }
 
+    /// The page at the top of the viewport last frame and how far down it the viewport's top
+    /// edge is, as a fraction of the page in the terms [`Self::goto`] takes, so that another view
+    /// can be scrolled to the same place on a page of its own. `None` when no page was drawn.
+    pub(crate) fn top_of_view(&self) -> Option<(usize, f32)> {
+        let top = self.viewport_screen.top();
+        let (page, rect) = self
+            .screen_xforms
+            .iter()
+            .filter(|(_, xf)| xf.rect.bottom() > top)
+            .min_by(|a, b| a.1.rect.top().total_cmp(&b.1.rect.top()))
+            .map(|(p, xf)| (*p, xf.rect))?;
+        // `goto` lines the page's top up a page gap below the viewport's top.
+        let frac = (top + self.page_gap() - rect.top()) / rect.height().max(1.0);
+        Some((page, if frac.is_finite() { frac.clamp(0.0, 1.0) } else { 0.0 }))
+    }
+
     /// Where `page` is drawn this frame, with its coordinate mapping.
     pub(crate) fn page_xform(&self, page: usize) -> Option<PageXform> {
         self.screen_xforms.iter().find(|(p, _)| *p == page).map(|(_, xf)| *xf)
